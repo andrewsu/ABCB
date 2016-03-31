@@ -1,0 +1,387 @@
+---
+title: "test"
+output: html_document
+---
+
+# 1 Introduction
+
+The goal of this notebook is to reanalyze a published microarray data set.  Here, we will use data from [this study](http://www.ncbi.nlm.nih.gov/pubmed/19732725), which contains data on pancreatic cancer samples.  We will first reproduce the corresponding figure in the paper, then perform some exploratory data analysis.
+
+## 2 Load libraries
+
+These commads will load the libraries that will be used later in this analysis.  If any of these result in errors, we need to first install those libraries.
+
+
+```{r cache=TRUE}
+library(GEOquery)
+library(mygene)
+library(ggplot2)
+library(dplyr)
+library(reshape)
+library(repr)
+```
+
+## 3 Retrieve and prepare data 
+### 3.1 Retrieve data from NCBI GEO
+
+[NCBI GEO](http://www.ncbi.nlm.nih.gov/geo/a) is one of the primary repositories for gene expression data.  In this step, you are contacting the GEO server to download data for `GDS4102`, the data set ID for the pancreatic tumor data set we are studying.
+```{r cache=TRUE}
+require(GEOquery)
+gds <- getGEO("GDS4102")
+```
+
+### 3.2 Extract expression data object
+
+The overall expression data object will be read into the variable `eset` (for "expression set").
+
+```{r cache=TRUE}
+eset <- GDS2eSet(gds)
+print(eset)
+```
+
+These warnings need to be checked out.  Doing a search for [GDS2eSet "In readLines(con, 1): seek on a gzfile connection returned an internal error"](https://www.google.com/search?q=GDS2eSet+%22In+readLines%28con%2C+1%29%3A+seek+on+a+gzfile+connection+returned+an+internal+error%22&ie=utf-8&oe=utf-8) leads to [this page](https://support.bioconductor.org/p/41581/), which states:
+
+> The warning messages are just that. Things will work fine even with the warnings.
+
+Clearly, let's do some sanity checking...
+
+### 3.3 Sanity check
+
+Let's read the data matrix into a variable called `dat`, in which each row is a probeset ID (generally corresponding to one transcript), and each column is a sample.  Then, let's look at the `head` of that data matrix and the overall dimensions.
+
+```{r}
+require(Biobase)
+
+dat <- exprs(eset)
+head(dat)
+
+dim(dat)
+
+```
+
+**Note**: This finding above is very odd -- we have data for 52 samples here, but paper reports 55 samples...
+
+Nevertheless, we push on....
+
+```{r}
+summary(as.numeric(dat))
+```
+
+### 3.4 Find the relevant probe set IDs
+
+Here, we use a library called `mygene` to query for the relevant reporters.
+
+```{r}
+require(mygene)
+queryGene <- mygene::query(q="FKBP51",species="human")
+queryGene$hits
+```
+
+Confusingly, both `FKBP5` and `FKBP4` have been referred to as `FKBP51` in the past.  Referencing the paper, it appears that `FKBP5` (Entrez Gene ID 2289) is the correct gene.
+
+We then get information of the `reporter` for this gene entry from `mygene`.
+
+```{r}
+queryGene <- getGene("2289", fields="symbol,entrezgene,reporter")
+print(queryGene)
+
+selectedProbeIDs <- queryGene$reporter$`HG-U133_Plus_2`
+selectedProbeIDs
+
+```
+
+### 3.5 Extract expression data
+
+Given the `selectedProbeIDs` found above, extract the relevant expression data from the entire data matrix.
+
+```{r}
+selectedDat <- dat[rownames(dat) %in%  selectedProbeIDs,]
+selectedDat
+dim(selectedDat)
+```
+
+## 4 Plotting
+
+### 4.1 Scatter plot
+
+There are two main methods for plotting in R.  One is the built-in `plot` command, and one is the `ggplot2` library.  For the first plots, both methods are shown.  Moving forward, you are welcome to use whichever library you choose.
+
+For the first plot, we will simply create a scatter plot corresponding to the first probe set we retrieved.
+
+#### `plot` method
+
+```{r}
+i <- 1
+probeID <- rownames(selectedDat)[i]
+plot(selectedDat[i,],main=probeID)
+```
+
+#### `ggplot2` method
+
+The most important thing to note is that ``ggplot2`` expects data to be in a data frame.
+
+```{r}
+selectedDatDF <- data.frame(idx=1:(dim(selectedDat)[2]),exp=selectedDat[i,])
+head(selectedDatDF)
+dim(selectedDatDF)
+
+require(ggplot2)
+
+ggplot(selectedDatDF, aes( x = idx, y = exp )) +
+    geom_point() +
+    ggtitle(probeID) 
+
+
+```
+
+### 4.2 Customizing with color
+
+The plots above aren't particularly useful because we can't see which samples correspond to tumor and which are the normal controls.  Here, we extract the phenotype data (or `pdata`) from our `eset` object.
+
+```{r}
+pData(eset)
+
+table(pData(eset)$tissue)
+
+```
+
+#### `plot` method
+
+```{r}
+plot(selectedDat[i,],main=probeID,col=pData(eset)$tissue)
+```
+
+#### `ggplot` method
+
+```{r}
+selectedDatDF$tissue <- pData(eset)$tissue
+head(selectedDatDF)
+
+ggplot(selectedDatDF, aes( x = idx, y = exp, colour = tissue )) +
+    geom_point() +
+    ggtitle(probeID) 
+
+```
+
+### 4.3 Barplots
+
+Another way to summarize these data is to use barplots.  (From here, we are only using ``ggplot``.)
+
+The first step is the summarize the data.  This section has intermediate-level transformations using the library `dplyr`.  For the moment, as long as you understand the input and output of this section, don't worry too much about how it's done.
+
+```{r}
+require(dplyr)
+grouped <- group_by(selectedDatDF,tissue)
+head(grouped)
+dim(grouped)
+```
+
+Now, we need to summarize the data table according to normal and tumor expression values.
+
+```{r}
+selectedDatDFSummarized     <- summarize(grouped, mean = mean(exp), sd = sd(exp), n = length(exp))
+selectedDatDFSummarized$sem <- selectedDatDFSummarized$sd / sqrt(selectedDatDFSummarized$n)
+selectedDatDFSummarized
+
+ggplot(selectedDatDFSummarized,aes(x = tissue,y = mean)) + 
+    geom_bar(stat = "identity") +
+    ggtitle(probeID) 
+
+```
+
+We can also add error bars using `geom_errorbar`:
+
+```{r}
+ggplot(selectedDatDFSummarized,aes(x = tissue,y = mean)) + 
+    geom_bar(stat="identity") +
+    geom_errorbar(aes(ymin = mean - sem, ymax = mean + sem)) +
+    ggtitle(probeID) 
+```
+
+Now, let's put all the code we've worked about above in a `for` loop so we can easily generate charts for all the probe sets of interest.
+
+```{r}
+for( i in 1:dim(selectedDat)[1] ) {
+  probeID <- rownames(selectedDat)[i]
+  selectedDatDF <- data.frame(idx = 1:(dim(selectedDat)[2]), exp = selectedDat[i, ])
+  selectedDatDF$tissue <- pData(eset)$tissue
+
+  grouped <- group_by(selectedDatDF, tissue)
+  selectedDatDFSummarized <- summarize(grouped, mean = mean(exp), sd = sd(exp), n = length(exp))
+  selectedDatDFSummarized$sem <- selectedDatDFSummarized$sd / sqrt(selectedDatDFSummarized$n)
+  print(
+      ggplot(selectedDatDFSummarized,aes(x = tissue,y = mean)) + 
+          geom_bar(stat = "identity") +
+          geom_errorbar(aes(ymin = mean - sem, ymax = mean + sem)) +
+          ggtitle(probeID) 
+      )
+}
+```
+
+Note that the third chart above for `224856_at` appears to be very similar to Figure 4D in the paper:
+
+<img src="https://www.dropbox.com/s/zxqe52nt7h5uomf/2016-03-23_15-58-42.jpg?dl=1">
+![Figure 4D](http://www.ncbi.nlm.nih.gov/core/lw/2.0/html/tileshop_pmc/tileshop_pmc_inline.html?p=PMC3&id=2755578_nihms136361f4.jpg)
+
+### 4.4 Dot plots
+
+Since there really aren't that many data points here, another way to visualize these data is a dot plot.
+
+* Google search [ggplot dot plot](https://www.google.com/search?q=ggplot+dot+plot)
+* [ggplot2 dot plot : Quick start guide](http://www.sthda.com/english/wiki/ggplot2-dot-plot-quick-start-guide-r-software-and-data-visualization)
+
+```{r}
+ggplot(selectedDatDF, aes(x = factor(tissue), y = exp)) + 
+  geom_dotplot(binaxis = "y",stackdir = "center") +
+  ggtitle(probeID) 
+```
+
+## 5 Exploratory data analysis
+
+What is exploratory data analysis? Excerpted from http://www.itl.nist.gov/div898/handbook/eda/section1/eda11.htm: 
+
+> Exploratory Data Analysis (EDA) is an approach/philosophy for data analysis 
+> that employs a variety of techniques (mostly graphical) to
+> 
+> * maximize insight into a data set;
+> * uncover underlying structure;
+> * extract important variables;
+> * detect outliers and anomalies;
+> * test underlying assumptions;
+> * develop parsimonious models; and
+> * determine optimal factor settings.
+
+Here, we will use several analysis and visualizations to explore this data set in an unbiased fashion.
+
+### 5.1 Cleaning the data
+
+```{r}
+head(dat)
+dim(dat)
+summary(dat)
+```
+
+Look at all those `NA`s -- definitely need to remove those.  First, let's do this with a `for` loop.
+
+```{r}
+# record the start time
+startTime <- proc.time()  
+
+naProbeSets <- c()
+for(i in 1:dim(dat)[1]){
+    naProbeSets[i] <- sum(is.na(dat[i, ]))
+}
+sum(naProbeSets != 0)
+
+# output time since start time
+print(proc.time() - startTime)
+```
+
+Now, let's use the same thing using the `apply` command
+
+```{r}
+# record the start time
+startTime <- proc.time()  
+
+naProbeSets2 <- apply(dat, 1, function(x) {sum(is.na(x))})
+sum(naProbeSets2 != 0)
+
+# output time since start time
+print(proc.time() - startTime)
+```
+
+The two vectors above (`naProbeSets` and `naProbeSets2`) have the same number of nonzero values.  Now, explictly confirm that they are the same.
+
+```{r}
+sum(naProbeSets != naProbeSets2)
+```
+
+Finally, remove all lines with NA values
+
+```{r}
+datNoNa <- dat[naProbeSets == 0, ]
+dim(datNoNa)
+```
+
+### 5.2 Checking normalization
+
+We want to plot the distribution of values for each array:
+* Google search [ggplot histogram distribution](https://www.google.com/search?q=ggplot+distributions&ie=utf-8&oe=utf-8#safe=off&q=ggplot+histogram+distribution)
+* http://www.cookbook-r.com/Graphs/Plotting_distributions_%28ggplot2%29/
+
+```{r}
+df <- as.data.frame(datNoNa)
+ggplot(df, aes(x = GSM414924)) + geom_histogram()
+```
+
+Not looking too informative -- let's try log transforming the data.
+
+```{r}
+dfLog <- log2(df)
+ggplot(dfLog, aes(x = GSM414924)) + geom_histogram()
+```
+
+If we want to overlay all histograms together, we need to `melt` our data frame into a new dataframe that ggplot will expect.
+
+```{r}
+require(reshape)
+print("BEFORE:")
+head(dfLog)
+dfLog2 = melt(dfLog, variable_name = "Sample")
+print("AFTER:")
+head(dfLog2)
+```
+
+Then, plot using ``ggplot``:
+
+```{r}
+ggplot(dfLog2, aes(x = value, color = Sample)) + geom_density()
+```
+
+We can also plot the distributions using a boxplot:
+
+```{r}
+ggplot(dfLog2, aes(x = Sample, y = value)) + 
+   geom_boxplot() 
+
+ggplot(dfLog2, aes(x = Sample, y = value)) + 
+   geom_boxplot() +
+   theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))
+```
+
+### 5.3 Heat map
+
+try a random sampling of 1000 probe sets
+
+```{r, fig.width=10}
+colnames(dfLog)<-paste(pData(eset)$sample,pData(eset)$tissue)
+heatmap(as.matrix(sample_n(dfLog,1000)))
+```
+
+Isolate the 1000 most variable probe sets
+
+```{r, fig.width=10}
+probeSetVariance <- apply(dfLog,1,var)
+variableProbeSets <- order(probeSetVariance,decreasing = TRUE)[1:1000]
+dfLogVariable <- dfLog[variableProbeSets, ]
+heatmap(as.matrix(dfLogVariable))
+```
+
+### 5.4 Differential expression analysis
+
+```{r}
+diffExpP <- c()
+for(i in 1:dim(dfLog)[1]) {
+  class1Exp <- dfLog[i, pData(eset)$tissue == "normal"]
+  class2Exp <- dfLog[i, pData(eset)$tissue == "tumor"]
+  diffExpP[i] <- t.test(class1Exp, class2Exp)$p.value
+}
+```
+
+HOMEWORK: write a new version of the code block above using the `apply` function.
+
+```{r, fig.width=10}
+heatmap(as.matrix(dfLog[diffExpP < 0.00001,]))
+
+```
+
