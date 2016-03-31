@@ -353,14 +353,14 @@ ggplot(dfLog2, aes(x = Sample, y = value)) +
 
 try a random sampling of 1000 probe sets
 
-```{r, fig.width=10}
+```{r, fig.width=10,fig.height=10}
 colnames(dfLog)<-paste(pData(eset)$sample,pData(eset)$tissue)
 heatmap(as.matrix(sample_n(dfLog,1000)))
 ```
 
 Isolate the 1000 most variable probe sets
 
-```{r, fig.width=10}
+```{r, fig.width=10,fig.height=10}
 probeSetVariance <- apply(dfLog,1,var)
 variableProbeSets <- order(probeSetVariance,decreasing = TRUE)[1:1000]
 dfLogVariable <- dfLog[variableProbeSets, ]
@@ -380,7 +380,7 @@ for(i in 1:dim(dfLog)[1]) {
 
 HOMEWORK: write a new version of the code block above using the `apply` function.
 
-```{r, fig.width=10}
+```{r, fig.width=10,fig.height=10}
 heatmap(as.matrix(dfLog[diffExpP < 0.00001,]))
 
 ```
